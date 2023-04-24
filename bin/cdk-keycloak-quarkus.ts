@@ -2,9 +2,8 @@
 import { App } from "aws-cdk-lib";
 import { writeFileSync } from "fs";
 import "source-map-support/register";
-import { KeycloakBuildStack } from "../lib/cdk-keycloak-quarkus-build-stack";
-import { CertificateStack } from "../lib/cdk-keycloak-quarkus-cert-stack";
-import { KeycloakClusterStack } from "../lib/cdk-keycloak-quarkus-cluster-stack";
+import { CertificateStack } from "../lib/cdk-certificate-stack";
+import { KeycloakStack } from "../lib/cdk-keycloak-stack";
 import { Common } from "../lib/common";
 
 const common = new Common();
@@ -13,7 +12,7 @@ const common = new Common();
 common.verifyEnvironment();
 common.verifyCallerAccount();
 common.verifyBranch();
-common.verifyContainer("keycloak");
+common.verifyContainer();
 
 // Get `env` for deploying stacks from 'cdk.json'
 const targetEnv = common.getEnvironment();
@@ -25,8 +24,7 @@ const env = {
 // Create stack name list
 const stackMap = {
   certificateStack: common.getId("CertificateStack"),
-  keycloakBuildStack: common.getId("KeycloakBuildStack"),
-  keycloakClusterStack: common.getId("KeycloakClusterStack"),
+  keycloakStack: common.getId("KeycloakStack"),
 };
 
 // Export stack name list to file
@@ -38,17 +36,13 @@ const certificateStack = new CertificateStack(app, stackMap.certificateStack, {
   env: env,
   terminationProtection: common.isProductionOrStaging(),
 });
-const keycloakBuildStack = new KeycloakBuildStack(app, stackMap.keycloakBuildStack, {
-  env: env,
-  terminationProtection: common.isProductionOrStaging(),
-});
-const keycloakClusterStack = new KeycloakClusterStack(app, stackMap.keycloakClusterStack, {
+const keycloakStack = new KeycloakStack(app, stackMap.keycloakStack, {
   env: env,
   terminationProtection: common.isProductionOrStaging(),
 });
 
 // Dependencies for parameter passing via SSM parameter store
-keycloakClusterStack.addDependency(certificateStack);
+keycloakStack.addDependency(certificateStack);
 
 // Tagging all resources
 common.addTags(app);

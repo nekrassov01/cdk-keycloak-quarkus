@@ -15,7 +15,7 @@ import {
   aws_ssm as ssm,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 
 const app = new App();
 
@@ -27,7 +27,7 @@ const envs = {
 } as const;
 
 // Environment name type
-type EnvironmentName = typeof envs[keyof typeof envs];
+type EnvironmentName = (typeof envs)[keyof typeof envs];
 
 // Valid Environment name list
 const validEnvNames = Object.values(envs);
@@ -97,8 +97,7 @@ export class Common {
         throw new Error(this.getConsoleMessage("Environment setting in 'cdk.json' not valid."));
       }
     } catch (e) {
-      console.error(e);
-      process.exit(1);
+      throw e;
     }
   }
 
@@ -110,8 +109,7 @@ export class Common {
         return obj.name === envName;
       });
     } catch (e) {
-      console.error(e);
-      process.exit(1);
+      throw e;
     }
   }
 
@@ -121,8 +119,7 @@ export class Common {
       const client = new STSClient({ region: this.getEnvironment().region });
       return await client.send(new GetCallerIdentityCommand({}));
     } catch (e) {
-      console.error(e);
-      process.exit(1);
+      throw e;
     }
   }
 
@@ -140,8 +137,7 @@ export class Common {
         }
       });
     } catch (e) {
-      console.error(e);
-      process.exit(1);
+      throw e;
     }
   }
 
@@ -151,8 +147,7 @@ export class Common {
       const client = new CodeCommitClient({ region: this.getEnvironment().region });
       return await client.send(new ListBranchesCommand({ repositoryName: this.params.target.repository }));
     } catch (e) {
-      console.error(e);
-      process.exit(1);
+      throw e;
     }
   }
 
@@ -169,8 +164,7 @@ export class Common {
         }
       });
     } catch (e) {
-      console.error(e);
-      process.exit(1);
+      throw e;
     }
   }
 
@@ -181,12 +175,11 @@ export class Common {
         return obj.name === imageName;
       });
       if (!ret) {
-        throw new Error(this.getConsoleMessage(`Container image '${imageName}' not valid.`));
+        throw new Error(this.getConsoleMessage(`Container image '${imageName}' not found in 'cdk.json'`));
       }
       return ret;
     } catch (e) {
-      console.error(e);
-      process.exit(1);
+      throw e;
     }
   }
 
@@ -202,61 +195,66 @@ export class Common {
   }
 
   // Verify container setting and ECR repository exists
-  public verifyContainer(imageName: string): void {
+  public verifyContainer(): void {
     try {
-      const config = this.getContainer(imageName);
-      const repoEnv = this.getEnvironment(config.environment);
-      let isValid = true;
+      const containerNames = this.params.containers.map((obj: ICommonParameter) => obj.name);
+      const containerNameUniqueLength = Array.from(new Set(containerNames)).length;
 
-      const isValidConfig = () => {
-        // Is the environment name valid
-        if (!validEnvNames.includes(config.environment)) {
-          isValid = false;
+      containerNames.map((imageName: string) => {
+        const config = this.getContainer(imageName);
+        let isValid = true;
+
+        const isValidConfig = () => {
+          // Is the environment name valid
+          if (!validEnvNames.includes(config.environment)) {
+            isValid = false;
+          }
+
+          // Is other parameters present
+          if (
+            !Object.keys(config.repositoryName).length ||
+            !Object.keys(config.imagePath).length ||
+            !Object.keys(config.version).length ||
+            !Object.keys(config.tag).length
+          ) {
+            isValid = false;
+          }
+
+          return isValid;
+        };
+        if (!isValidConfig()) {
+          throw new Error(this.getConsoleMessage(`Container settings '${imageName}' in 'cdk.json' not valid.`));
         }
 
-        // Is other parameters present
-        if (
-          !Object.keys(config.repositoryName).length ||
-          !Object.keys(config.imagePath).length ||
-          !Object.keys(config.version).length ||
-          !Object.keys(config.tag).length
-        ) {
-          isValid = false;
+        // Does the template file exist
+        const templateFile = `${config.imagePath}/template`;
+        if (!existsSync(templateFile)) {
+          throw new Error(`Template file not found. Please check '${templateFile}' exists.`);
         }
 
-        return isValid;
-      };
-
-      if (!isValidConfig()) {
-        throw new Error(this.getConsoleMessage(`Container setting '${imageName}' in 'cdk.json' not valid.`));
-      }
-
-      const templateFile = `${config.imagePath}/template`;
-      if (!existsSync(templateFile)) {
-        throw new Error(`Template file not found. Please check '${templateFile}' exists.`);
-      }
-
-      if (!existsSync(config.imagePath)) {
-        mkdirSync(config.imagePath);
-      }
-
-      const getContainerRepositories = async (): Promise<DescribeRepositoriesCommandOutput> => {
-        const client = new ECRClient({ region: repoEnv.region });
-        return await client.send(new DescribeRepositoriesCommand({ registryId: repoEnv.Account }));
-      };
-
-      getContainerRepositories().then((obj) => {
-        if (
-          obj.repositories?.find((repo) => {
-            return repo.repositoryName === config.repositoryName;
-          }) === undefined
-        ) {
-          throw new Error(this.getConsoleMessage(`Container repository '${config.repositoryName}' not found.`));
-        }
+        // Check if the ECR repository exists
+        const repoEnv = this.getEnvironment(config.environment);
+        const getContainerRepositories = async (): Promise<DescribeRepositoriesCommandOutput> => {
+          const client = new ECRClient({ region: repoEnv.region });
+          return await client.send(new DescribeRepositoriesCommand({ registryId: repoEnv.Account }));
+        };
+        getContainerRepositories().then((obj) => {
+          if (
+            obj.repositories?.find((repo) => {
+              return repo.repositoryName === config.repositoryName;
+            }) === undefined
+          ) {
+            throw new Error(this.getConsoleMessage(`Container repository '${config.repositoryName}' not found.`));
+          }
+        });
       });
+
+      // Are there any duplicate container names in `params.containers`
+      if (containerNames.length !== containerNameUniqueLength) {
+        throw new Error(this.getConsoleMessage(`Container name duplicated in 'cdk.json'`));
+      }
     } catch (e) {
-      console.error(e);
-      process.exit(1);
+      throw e;
     }
   }
 
@@ -271,8 +269,7 @@ export class Common {
       });
       writeFileSync(`${config.imagePath}/Dockerfile`, out);
     } catch (e) {
-      console.error(e);
-      process.exit(1);
+      throw e;
     }
   }
 
@@ -499,10 +496,10 @@ export class Common {
           },
           alb: {
             healthyThresholdCount: 3,
-            slowStart: Duration.seconds(60),
-            stickinessCookieDuration: Duration.days(1),
             interval: Duration.seconds(60),
             timeout: Duration.seconds(30),
+            slowStart: Duration.seconds(60),
+            stickinessCookieDuration: Duration.days(1),
           },
           bastion: {
             instanceType: "m5.large",
@@ -515,13 +512,13 @@ export class Common {
             command: ["--verbose", "start"],
           },
           service: {
-            nodeCount: 2,
+            nodeCount: 1,
             healthCheckGracePeriod: Duration.minutes(5),
             circuitBreaker: undefined,
             scaling: {
               base: {
                 minCapacity: 1,
-                maxCapacity: 4,
+                maxCapacity: 2,
                 cpuUtilization: 90,
                 scaleOutCoolDown: Duration.seconds(300),
                 scaleInCoolDown: Duration.seconds(300),
@@ -529,7 +526,7 @@ export class Common {
               schedule: {
                 beforeOpening: {
                   minCapacity: 2,
-                  maxCapacity: 3,
+                  maxCapacity: 4,
                   cron: {
                     minute: "30",
                     hour: "23",
@@ -576,10 +573,10 @@ export class Common {
           },
           alb: {
             healthyThresholdCount: 3,
-            slowStart: Duration.seconds(60),
-            stickinessCookieDuration: Duration.days(1),
             interval: Duration.seconds(60),
             timeout: Duration.seconds(30),
+            slowStart: Duration.seconds(60),
+            stickinessCookieDuration: Duration.days(1),
           },
           bastion: {
             instanceType: "t3.micro",

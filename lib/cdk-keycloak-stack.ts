@@ -4,6 +4,7 @@ import {
   aws_applicationautoscaling as aas,
   aws_secretsmanager as asm,
   aws_ec2 as ec2,
+  aws_ecr as ecr,
   aws_ecs as ecs,
   aws_elasticloadbalancingv2 as elbv2,
   aws_iam as iam,
@@ -13,6 +14,7 @@ import {
   aws_route53_targets as route53targets,
   aws_ssm as ssm,
 } from "aws-cdk-lib";
+import { Destination, DockerImageDeployment, Source } from "cdk-docker-image-deployment";
 import { Construct } from "constructs";
 import { Common } from "./common";
 
@@ -21,10 +23,12 @@ const params = common.loadConfig();
 const serviceName = "keycloak";
 const dbUserName = "admin";
 const domainName = `auth.${common.getDomain()}`;
+const env = common.getEnvironment();
+const containerConfig = common.getContainer(serviceName);
 
 // Stack for ECS on Fargate running Keycloak authentication infrastructure
 // NOTE: Assumes Quarkus distribution
-export class KeycloakClusterStack extends Stack {
+export class KeycloakStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
 
@@ -54,31 +58,6 @@ export class KeycloakClusterStack extends Stack {
     });
     const vpcPublicSubnets = vpc.selectSubnets({ subnetType: ec2.SubnetType.PUBLIC });
     const vpcPrivateSubnets = vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS });
-
-    /*********
-     * EC2
-     *********/
-
-    // Bastion host security group
-    const bastionSecurityGroupName = common.getResourceName(`${serviceName}-bastion-security-group`);
-    const bastionSecurityGroup = new ec2.SecurityGroup(this, "BastionSecurityGroup", {
-      securityGroupName: bastionSecurityGroupName,
-      description: bastionSecurityGroupName,
-      vpc: vpc,
-      allowAllOutbound: true,
-    });
-    common.addNameTag(bastionSecurityGroup, bastionSecurityGroupName);
-
-    // Bastion host
-    const bastion = new ec2.BastionHostLinux(this, "Bastion", {
-      instanceName: common.getResourceName(`${serviceName}-bastion`),
-      instanceType: new ec2.InstanceType(common.getEcsParameter().bastion.instanceType),
-      vpc: vpc,
-      securityGroup: bastionSecurityGroup,
-    });
-
-    // Override role name
-    (bastion.role.node.defaultChild as iam.CfnRole).roleName = common.getResourceName(`${serviceName}-bastion-role`);
 
     /*********
      * RDS
@@ -185,22 +164,24 @@ export class KeycloakClusterStack extends Stack {
     );
 
     /*********
-     * S3
-     *********/
-
-    //// S3 bucket for keycloak distributed cache: <https://www.keycloak.org/server/caching#_transport_stacks>
-    //const s3RemovalPolicy = common.getS3RemovalPolicy();
-    //const s3KeycloakPingBucket = new s3.Bucket(this, "S3KeycloakPingBucket", {
-    //  bucketName: common.getResourceName(`${serviceName}-ping`),
-    //  encryption: s3.BucketEncryption.S3_MANAGED,
-    //  removalPolicy: s3RemovalPolicy.removalPolicy,
-    //  autoDeleteObjects: s3RemovalPolicy.autoDeleteObjects,
-    //  versioned: false,
-    //});
-
-    /*********
      * ECS
      *********/
+
+    // Create Dockerfile dynamically using parameters in 'cdk.json'
+    common.createDockerfile(serviceName);
+
+    // Get ECR repository
+    const containerRepository = ecr.Repository.fromRepositoryArn(
+      this,
+      "ContainerRepository",
+      `arn:aws:ecr:${env.region}:${env.account}:repository/${containerConfig.repositoryName}`
+    );
+
+    // Deploy container image via codebuild
+    new DockerImageDeployment(this, "KeycloakImageDeploy", {
+      source: Source.directory(containerConfig.imagePath),
+      destination: Destination.ecr(containerRepository, { tag: containerConfig.tag }),
+    });
 
     // Port settings
     const containerPort = 8080;
@@ -233,7 +214,7 @@ export class KeycloakClusterStack extends Stack {
     });
     ecsCluster.node.addDependency(dbCluster);
 
-    // ECS execution role
+    // ECS task execution role
     const ecsTaskExecutionRole = new iam.Role(this, "ECSTaskExecutionRole", {
       roleName: common.getResourceName(`${serviceName}-task-execution-role`),
       assumedBy: new iam.CompositePrincipal(
@@ -293,10 +274,7 @@ export class KeycloakClusterStack extends Stack {
     // Task definition with container definition added
     ecsTaskDefinition.addContainer("ECSTaskDefinition", {
       containerName: serviceName,
-      image: ecs.ContainerImage.fromEcrRepository(
-        common.getContainerRepository(this, serviceName),
-        common.getContainer(serviceName).tag
-      ),
+      image: ecs.ContainerImage.fromEcrRepository(containerRepository, containerConfig.tag),
       command: common.getEcsParameter().taskDefinition.command,
       secrets: {
         KC_DB_PASSWORD: ecs.Secret.fromSecretsManager(dbCluster.secret!, "password"),
@@ -308,8 +286,6 @@ export class KeycloakClusterStack extends Stack {
         streamPrefix: serviceName,
       }),
       environment: {
-        //JAVA_OPTS_APPEND: `-Djgroups.s3.region_name=${this.region} -Djgroups.s3.bucket_name=${s3KeycloakPingBucket.bucketName}`,
-        //KC_CACHE_STACK: "ec2",
         KC_CACHE_CONFIG_FILE: "cache-ispn-jdbc-ping.xml",
         KC_DB: "mysql",
         KC_DB_URL: `jdbc:mysql://${dbCluster.clusterEndpoint.hostname}:${dbListenerPort}/${serviceName}`,
@@ -327,9 +303,6 @@ export class KeycloakClusterStack extends Stack {
     // Allow execution role to read the secrets
     dbCluster.secret!.grantRead(ecsTaskDefinition.executionRole!);
     userSecret.grantRead(ecsTaskDefinition.executionRole!);
-
-    // Allow task role to read/write the bucket
-    //keycloakS3KeycloakPingBucket.grantReadWrite(ecsTaskDefinition.taskRole);
 
     // ECS service security group
     const ecsServiceSecurityGroupName = common.getResourceName(`${serviceName}-ecs-service-security-group`);
@@ -366,9 +339,6 @@ export class KeycloakClusterStack extends Stack {
 
     // Allow ecs task connect to database
     dbCluster.connections.allowDefaultPortFrom(ecsService, "Allow ECS task connect to database");
-
-    // Allow bastion host connect to database
-    dbCluster.connections.allowDefaultPortFrom(bastion, "Allow bastion host connect to database");
 
     // ECS auto scaling capacity
     const ecsAutoScaling = ecsService.autoScaleTaskCount({
@@ -462,9 +432,37 @@ export class KeycloakClusterStack extends Stack {
       recordName: domainName,
       target: route53.RecordTarget.fromAlias(new route53targets.LoadBalancerTarget(alb)),
       zone: route53.HostedZone.fromLookup(this, "HostedZone", {
-        domainName: common.getEnvironment().domain,
+        domainName: env.domain,
       }),
     });
     albARecord.node.addDependency(alb);
+
+    /*********
+     * EC2
+     *********/
+
+    // Bastion host security group
+    const bastionSecurityGroupName = common.getResourceName(`${serviceName}-bastion-security-group`);
+    const bastionSecurityGroup = new ec2.SecurityGroup(this, "BastionSecurityGroup", {
+      securityGroupName: bastionSecurityGroupName,
+      description: bastionSecurityGroupName,
+      vpc: vpc,
+      allowAllOutbound: true,
+    });
+    common.addNameTag(bastionSecurityGroup, bastionSecurityGroupName);
+
+    // Bastion host
+    const bastion = new ec2.BastionHostLinux(this, "Bastion", {
+      instanceName: common.getResourceName(`${serviceName}-bastion`),
+      instanceType: new ec2.InstanceType(common.getEcsParameter().bastion.instanceType),
+      vpc: vpc,
+      securityGroup: bastionSecurityGroup,
+    });
+
+    // Override role name
+    (bastion.role.node.defaultChild as iam.CfnRole).roleName = common.getResourceName(`${serviceName}-bastion-role`);
+
+    // Allow bastion host connect to database
+    dbCluster.connections.allowDefaultPortFrom(bastion, "Allow bastion host connect to database");
   }
 }
