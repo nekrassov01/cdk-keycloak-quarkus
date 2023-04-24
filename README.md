@@ -16,8 +16,7 @@ Deploy a Quarkus-based Keycloak cluster with Amazon ECS.
 
 ## Stack Information
 
-| Stack Name                         | Description                                                                                                                                         |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| cdk-keycloak-quarkus-cert-stack    | Create a wildcard certificate to attach to the application load balancer.                                                                           |
-| cdk-keycloak-quarkus-build-stack   | Use the [cdk-docker-image-deployment](https://github.com/cdklabs/cdk-docker-image-deployment) library to build a Keycloak image and push it to ECR. |
-| cdk-keycloak-quarkus-cluster-stack | Deploy a Keycloak cluster on Fargate using the container image pushed to ECR.                                                                       |
+| Stack Name            | Description                                                                   |
+| --------------------- | ----------------------------------------------------------------------------- |
+| cdk-certificate-stack | Create a wildcard certificate to attach to the application load balancer.     |
+| cdk-keycloak-stack    | Deploy a Keycloak cluster on Fargate using the container image pushed to ECR. |
