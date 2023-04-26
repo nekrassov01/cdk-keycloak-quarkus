@@ -323,6 +323,8 @@ export class KeycloakStack extends Stack {
       desiredCount: common.getEcsParameter().service.nodeCount,
       healthCheckGracePeriod: common.getEcsParameter().service.healthCheckGracePeriod,
       securityGroups: [ecsServiceSecurityGroup],
+      enableECSManagedTags: true,
+      enableExecuteCommand: true,
       //deploymentController: { type: ecs.DeploymentControllerType.CODE_DEPLOY },
     });
 
