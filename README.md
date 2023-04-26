@@ -20,3 +20,9 @@ Deploy a Quarkus-based Keycloak cluster with Amazon ECS.
 | --------------------- | ----------------------------------------------------------------------------- |
 | cdk-certificate-stack | Create a wildcard certificate to attach to the application load balancer.     |
 | cdk-keycloak-stack    | Deploy a Keycloak cluster on Fargate using the container image pushed to ECR. |
+
+## Todo
+
+- Secrets rotation.
+- Getting secrets via VPC endpoints instead of via NAT gateway.
+- Setting user data in basition.
