@@ -413,7 +413,7 @@ export class Common {
     return this.isProductionOrStaging()
       ? {
           deletionProtection: true,
-          buckupRetentionDays: Duration.days(1),
+          buckupRetentionDays: Duration.days(7),
           scaling: { minCapacity: 0.5, maxCapacity: 64 },
           performanceInsightRetention: Duration.days(7),
         }

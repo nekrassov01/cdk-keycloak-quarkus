@@ -63,11 +63,13 @@ export class KeycloakStack extends Stack {
      * RDS
      *********/
 
+    const mysqlEngine = rds.DatabaseClusterEngine.auroraMysql({
+      version: rds.AuroraMysqlEngineVersion.VER_3_02_0,
+    });
+
     // Database cluster parameter group
     const dbClusterParameterGroup = new rds.ParameterGroup(this, "DBClusterParameterGroup", {
-      engine: rds.DatabaseClusterEngine.auroraMysql({
-        version: rds.AuroraMysqlEngineVersion.VER_3_02_0,
-      }),
+      engine: mysqlEngine,
       description: `Cluster parameter group for aurora-mysql8.0 for ${params.target.application} authentication infrastructure`,
       parameters: {
         slow_query_log: "1",
@@ -79,9 +81,7 @@ export class KeycloakStack extends Stack {
 
     // Database instance parameter group
     const dbInstanceParameterGroup = new rds.ParameterGroup(this, "DBInstanceParameterGroup", {
-      engine: rds.DatabaseClusterEngine.auroraMysql({
-        version: rds.AuroraMysqlEngineVersion.VER_3_02_0,
-      }),
+      engine: mysqlEngine,
       description: `Instance parameter group for aurora-mysql8.0 for ${params.target.application} authentication infrastructure`,
     });
     dbInstanceParameterGroup.bindToInstance({});
@@ -121,9 +121,7 @@ export class KeycloakStack extends Stack {
 
     // Aurora Serverless v2
     const dbCluster = new rds.DatabaseCluster(this, "DBCluster", {
-      engine: rds.DatabaseClusterEngine.auroraMysql({
-        version: rds.AuroraMysqlEngineVersion.VER_3_02_0,
-      }),
+      engine: mysqlEngine,
       clusterIdentifier: common.getResourceName(`${serviceName}-db-cluster`),
       instanceIdentifierBase: common.getResourceName(`${serviceName}-db-instance`),
       defaultDatabaseName: serviceName,
@@ -177,7 +175,7 @@ export class KeycloakStack extends Stack {
       `arn:aws:ecr:${env.region}:${env.account}:repository/${containerConfig.repositoryName}`
     );
 
-    // Deploy container image via codebuild
+    // Deploy container image
     new DockerImageDeployment(this, "KeycloakImageDeploy", {
       source: Source.directory(containerConfig.imagePath),
       destination: Destination.ecr(containerRepository, { tag: containerConfig.tag }),
