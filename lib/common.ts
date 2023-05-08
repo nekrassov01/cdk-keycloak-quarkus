@@ -36,9 +36,11 @@ const validEnvNames = Object.values(envs);
 interface ICommonParameter {
   [key: string]: any;
 }
+
 /**
  * Self-created class to be called from all stacks
  */
+
 export class Common {
   private readonly params = this.loadConfig();
 
@@ -413,15 +415,29 @@ export class Common {
     return this.isProductionOrStaging()
       ? {
           deletionProtection: true,
-          buckupRetentionDays: Duration.days(7),
-          scaling: { minCapacity: 0.5, maxCapacity: 64 },
+          backup: {
+            retentionDays: Duration.days(7),
+          },
+          monitoringInterval: Duration.minutes(1),
+          scaling: {
+            minCapacity: 2,
+            maxCapacity: 64,
+          },
           performanceInsightRetention: Duration.days(7),
+          secretRetentionDays: Duration.days(7),
         }
       : {
           deletionProtection: false,
-          buckupRetentionDays: Duration.days(1),
-          scaling: { minCapacity: 0.5, maxCapacity: 2 },
+          backup: {
+            retentionDays: Duration.days(1),
+          },
+          monitoringInterval: Duration.minutes(1),
+          scaling: {
+            minCapacity: 0.5,
+            maxCapacity: 2,
+          },
           performanceInsightRetention: Duration.days(1),
+          secretRetentionDays: Duration.days(7),
         };
   }
 

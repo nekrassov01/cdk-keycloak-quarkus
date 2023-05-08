@@ -70,7 +70,7 @@ export class KeycloakStack extends Stack {
     // Database cluster parameter group
     const dbClusterParameterGroup = new rds.ParameterGroup(this, "DBClusterParameterGroup", {
       engine: mysqlEngine,
-      description: `Cluster parameter group for aurora-mysql8.0 for ${params.target.application} authentication infrastructure`,
+      description: `Cluster parameter group for ${serviceName}`,
       parameters: {
         slow_query_log: "1",
       },
@@ -82,7 +82,7 @@ export class KeycloakStack extends Stack {
     // Database instance parameter group
     const dbInstanceParameterGroup = new rds.ParameterGroup(this, "DBInstanceParameterGroup", {
       engine: mysqlEngine,
-      description: `Instance parameter group for aurora-mysql8.0 for ${params.target.application} authentication infrastructure`,
+      description: `Instance parameter group for ${serviceName}`,
     });
     dbInstanceParameterGroup.bindToInstance({});
     (dbInstanceParameterGroup.node.defaultChild as rds.CfnDBParameterGroup).dbParameterGroupName =
@@ -108,12 +108,13 @@ export class KeycloakStack extends Stack {
     common.addNameTag(dbSecurityGroup, dbSecurityGroupName);
 
     // Database credential
+    const dbSecretExcludeCharacters = " % +~`#$&*()|[]{}:;<>?!'/@\"\\";
     const dbSecret = new asm.Secret(this, "DBSecret", {
       secretName: common.getResourceName(`${serviceName}-db-secret`),
-      description: "Credentials for database",
+      description: `Credentials for ${serviceName} database`,
       generateSecretString: {
         generateStringKey: "password",
-        excludeCharacters: " % +~`#$&*()|[]{}:;<>?!'/@\"\\",
+        excludeCharacters: dbSecretExcludeCharacters,
         passwordLength: 30,
         secretStringTemplate: JSON.stringify({ username: dbUserName }),
       },
@@ -124,8 +125,10 @@ export class KeycloakStack extends Stack {
       engine: mysqlEngine,
       clusterIdentifier: common.getResourceName(`${serviceName}-db-cluster`),
       instanceIdentifierBase: common.getResourceName(`${serviceName}-db-instance`),
+      instances: 2,
       defaultDatabaseName: serviceName,
-      deletionProtection: common.getRdsParameter().deletionProtection,
+      deletionProtection: false,
+      iamAuthentication: false,
       credentials: rds.Credentials.fromSecret(dbSecret),
       instanceProps: {
         vpc: vpc,
@@ -134,12 +137,20 @@ export class KeycloakStack extends Stack {
         securityGroups: [dbSecurityGroup],
         parameterGroup: dbInstanceParameterGroup,
         enablePerformanceInsights: true,
+        allowMajorVersionUpgrade: false,
+        autoMinorVersionUpgrade: true,
+        deleteAutomatedBackups: false,
+        performanceInsightRetention: rds.PerformanceInsightRetention.DEFAULT,
+        publiclyAccessible: false,
       },
       subnetGroup: dbSubnetGroup,
       parameterGroup: dbClusterParameterGroup,
       backup: {
-        retention: common.getRdsParameter().buckupRetentionDays,
+        retention: common.getRdsParameter().backup.retentionDays,
+        preferredWindow: "17:00-17:30",
       },
+      monitoringInterval: common.getRdsParameter().monitoringInterval,
+      preferredMaintenanceWindow: "Sat:18:00-Sat:18:30",
       storageEncrypted: true,
       removalPolicy: common.getRemovalPolicy(),
       copyTagsToSnapshot: true,
@@ -160,6 +171,28 @@ export class KeycloakStack extends Stack {
       ec2.Port.tcp(dbListenerPort),
       "Allow resources in VPC connect to database"
     );
+
+    // Database security group
+    const dbSecretRotationFunctionSecurityGroupName = common.getResourceName(`${serviceName}-db-secret-security-group`);
+    const dbSecretRotationFunctionSecurityGroup = new ec2.SecurityGroup(this, "DBSecretRotationFunctionSecurityGroup", {
+      securityGroupName: dbSecretRotationFunctionSecurityGroupName,
+      description: dbSecretRotationFunctionSecurityGroupName,
+      vpc: vpc,
+      allowAllOutbound: true,
+    });
+    common.addNameTag(dbSecretRotationFunctionSecurityGroup, dbSecretRotationFunctionSecurityGroupName);
+
+    // Database credential rotation
+    new asm.SecretRotation(this, "DBSecretRotation", {
+      application: asm.SecretRotationApplication.MYSQL_ROTATION_SINGLE_USER,
+      secret: dbSecret,
+      target: dbCluster,
+      vpc: vpc,
+      automaticallyAfter: common.getRdsParameter().secretRetentionDays,
+      excludeCharacters: dbSecretExcludeCharacters,
+      securityGroup: dbSecretRotationFunctionSecurityGroup,
+      vpcSubnets: vpcPrivateSubnets,
+    });
 
     /*********
      * ECS
@@ -244,7 +277,7 @@ export class KeycloakStack extends Stack {
     // Keycloak credential
     const userSecret = new asm.Secret(this, "UserSecret", {
       secretName: common.getResourceName(`${serviceName}-user-secret`),
-      description: "Credentials for keycloak",
+      description: `Credentials for ${serviceName} user`,
       generateSecretString: {
         generateStringKey: "password",
         excludePunctuation: true,
@@ -337,8 +370,8 @@ export class KeycloakStack extends Stack {
       }
     });
 
-    // Allow ecs task connect to database
-    dbCluster.connections.allowDefaultPortFrom(ecsService, "Allow ECS task connect to database");
+    // Allow ECS service connect to database
+    dbCluster.connections.allowDefaultPortFrom(ecsService, "Allow ECS service connect to database");
 
     // ECS auto scaling capacity
     const ecsAutoScaling = ecsService.autoScaleTaskCount({
